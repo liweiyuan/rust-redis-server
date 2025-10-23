@@ -54,9 +54,63 @@ impl CommandRegistry {
 
 pub fn parse_request(buffer: &[u8]) -> (String, Vec<String>) {
     let request_str = String::from_utf8_lossy(buffer);
+    
+    // Check if it's RESP protocol (starts with *)
+    if request_str.starts_with('*') {
+        return parse_resp_protocol(&request_str);
+    }
+    
+    // Fallback to simple parsing for testing
     let mut parts = request_str.trim().split_whitespace();
     let command = parts.next().unwrap_or("").to_uppercase();
     let args = parts.map(String::from).collect();
+    (command, args)
+}
+
+fn parse_resp_protocol(request_str: &str) -> (String, Vec<String>) {
+    let mut lines = request_str.lines();
+    let mut args = Vec::new();
+    
+    // First line should be *<number of elements>
+    let first_line = match lines.next() {
+        Some(line) => line,
+        None => return ("".to_string(), vec![]),
+    };
+    
+    if !first_line.starts_with('*') {
+        return ("".to_string(), vec![]);
+    }
+    
+    let element_count: usize = match first_line[1..].parse() {
+        Ok(count) => count,
+        Err(_) => return ("".to_string(), vec![]),
+    };
+    
+    // Parse each element
+    for _ in 0..element_count {
+        // Expecting a bulk string: $<length> followed by data
+        let length_line = match lines.next() {
+            Some(line) => line,
+            None => return ("".to_string(), vec![]),
+        };
+        
+        if !length_line.starts_with('$') {
+            return ("".to_string(), vec![]);
+        }
+        
+        let data_line = match lines.next() {
+            Some(line) => line,
+            None => return ("".to_string(), vec![]),
+        };
+        
+        args.push(data_line.to_string());
+    }
+    
+    if args.is_empty() {
+        return ("".to_string(), vec![]);
+    }
+    
+    let command = args.remove(0).to_uppercase();
     (command, args)
 }
 
@@ -90,6 +144,12 @@ mod tests {
         let (cmd, args) = parse_request(b"  set   key   value  \r\n");
         assert_eq!(cmd, "SET");
         assert_eq!(args, vec!["key", "value"]);
+        
+        // Test RESP protocol parsing
+        let resp_request = b"*3\r\n$3\r\nSET\r\n$7\r\ntestkey\r\n$9\r\ntestvalue\r\n";
+        let (cmd, args) = parse_request(resp_request);
+        assert_eq!(cmd, "SET");
+        assert_eq!(args, vec!["testkey", "testvalue"]);
     }
 
     #[test]
